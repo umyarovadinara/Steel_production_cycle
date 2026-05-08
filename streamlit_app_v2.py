@@ -1,123 +1,108 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
-import os
 
-st.set_page_config(page_title="Steel Production Analytics", layout="wide")
+st.set_page_config(page_title="Steel Production Monitoring", layout="wide")
 
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ ДАННЫХ (MECE ЛОГИКА) ---
-def ensure_dummy_data():
-    files = {
-        'smelting_v2.xlsx': {
-            'Дата': ['01.05.2024']*3,
-            'ID Плавки': ['M-001']*3,
-            'Толщина сляба, мм': [250]*3,
-            'Ширина сляба, мм': [1500]*3,
-            'Масса, тн': [50, 200, 750],
-            'Признак годности': ['Переходные и обрезь', 'Годные', 'Годные'],
-            'Прокатка': ['-', 'Склад', 'ЦГП']
-        },
-        'rolling_v2.xlsx': {
-            'Дата': ['02.05.2024']*4,
-            'Толщина, мм': [10]*4,
-            'Ширина, мм': [1500]*4,
-            'Масса, тн': [20, 30, 100, 600],
-            'Признак годности': ['потери при прокатке', 'некондиция', 'годные', 'годные'],
-            'Порезка': ['-', '-', 'Склад', 'порезано']
-        },
-        'cutting_v2.xlsx': {
-            'Дата': ['03.05.2024']*2,
-            'Толщина, мм': [10]*2,
-            'Ширина, мм': [750]*2,
-            'Масса, тн': [10, 590],
-            'Признак годности': ['потери при резке', 'годные']
-        },
-        'shipping_v2.xlsx': {
-            'Дата': ['04.05.2024']*2,
-            'Толщина, мм': [10]*2,
-            'Ширина, мм': [750]*2,
-            'Масса, тн': [40, 550],
-            'Получатель': ['Склад', 'Отгрузка клиенту']
-        }
-    }
-    for f_name, data in files.items():
-        if not os.path.exists(f_name):
-            pd.DataFrame(data).to_excel(f_name, index=False)
-
-ensure_dummy_data()
-
-# --- ЗАГРУЗКА ДАННЫХ ---
+# --- ФУНКЦИЯ ЗАГРУЗКИ ---
+# При деплое на GitHub файлы должны лежать в той же папке, что и этот скрипт
 @st.cache_data
 def load_data():
-    s = pd.read_excel('smelting_v2.xlsx')
-    r = pd.read_excel('rolling_v2.xlsx')
-    c = pd.read_excel('cutting_v2.xlsx')
-    sh = pd.read_excel('shipping_v2.xlsx')
-    return s, r, c, sh
+    try:
+        s = pd.read_excel('smelting_v3.xlsx')
+        r = pd.read_excel('rolling_v3.xlsx')
+        c = pd.read_excel('cutting_v3.xlsx')
+        sh = pd.read_excel('shipping_v3.xlsx')
+        return s, r, c, sh
+    except FileNotFoundError as e:
+        st.error(f"Ошибка: Не найден файл {e.filename}. Убедитесь, что загрузили эксели в репозиторий.")
+        st.stop()
 
 df_s, df_r, df_c, df_sh = load_data()
 
-st.title("🏗 Цикл производства высокопрочной стали")
-st.markdown("---")
+# --- SIDEBAR (ПАНЕЛЬ ФИЛЬТРОВ) ---
+st.sidebar.header("🔍 Фильтры данных")
 
-# --- РАСЧЕТ ПОКАЗАТЕЛЕЙ (MECE) ---
-total_in = df_s['Масса, тн'].sum()
-to_rolling = df_s[df_s['Прокатка'] == 'ЦГП']['Масса, тн'].sum()
-to_cutting = df_r[df_r['Порезка'] == 'порезано']['Масса, тн'].sum()
-shipped = df_sh[df_sh['Получатель'] == 'Отгрузка клиенту']['Масса, тн'].sum()
+# Множественный выбор марок
+all_marks = sorted(df_s['Марка'].unique())
+selected_marks = st.sidebar.multiselect("Выберите марки стали:", options=all_marks, default=all_marks)
 
-# KPI
-cols = st.columns(4)
-cols[0].metric("Выплавка (Всего)", f"{total_in} тн")
-cols[1].metric("Ушло в прокат", f"{to_rolling} тн")
-cols[2].metric("Ушло на порезку", f"{to_cutting} тн")
-cols[3].metric("Отгружено клиенту", f"{shipped} тн", f"{shipped/total_in:.1%}")
+# Множественный выбор плавок
+all_ids = sorted(df_s['ID Плавки'].unique())
+selected_ids = st.sidebar.multiselect("Выберите ID плавок:", options=all_ids, default=all_ids)
 
-# --- SANKEY DIAGRAM ---
-st.subheader("📊 Потоки и потери (Sankey Diagram)")
+# Фильтрация всех датафреймов
+df_s_f = df_s[(df_s['Марка'].isin(selected_marks)) & (df_s['ID Плавки'].isin(selected_ids))]
+df_r_f = df_r[(df_r['Марка'].isin(selected_marks)) & (df_r['ID Плавки'].isin(selected_ids))]
+df_c_f = df_c[(df_c['Марка'].isin(selected_marks)) & (df_c['ID Плавки'].isin(selected_ids))]
+df_sh_f = df_sh[(df_sh['Марка'].isin(selected_marks)) & (df_sh['ID Плавки'].isin(selected_ids))]
 
-nodes = [
-    "Выплавка (Старт)", "Переходные", "Склад (Слябы)", "ЦГП", 
-    "Потери проката", "Некондиция", "Склад (Рулоны)", "Порезка", 
-    "Потери резки", "Склад (Листы)", "ОТГРУЖЕНО"
-]
+st.title("🏭 Мониторинг производственного цикла высокопрочной стали")
+st.markdown(f"**Выбрано марок:** {', '.join(selected_marks)} | **Плавок в анализе:** {len(selected_ids)}")
 
-# Логика связей
-# 0 -> 1 (Переходные), 0 -> 2 (Склад слябов), 0 -> 3 (ЦГП)
-# 3 -> 4 (Потери), 3 -> 5 (Некондиция), 3 -> 6 (Склад рулонов), 3 -> 7 (Порезка)
-# 7 -> 8 (Потери резки), 7 -> 10 (Отгружено) через промежуточный склад 9
-# Мы берем суммы из загруженных MECE экселей:
+# --- 1. MECE ТАБЛИЦА (ШАХМАТКА) ---
+st.subheader("📅 Сводный MECE-баланс по датам")
 
-links = dict(
-    source = [0, 0, 0, 3, 3, 3, 3, 7, 7, 7],
-    target = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    value = [
-        df_s[df_s['Признак годности'] == 'Переходные и обрезь']['Масса, тн'].sum(),
-        df_s[df_s['Прокатка'] == 'Склад']['Масса, тн'].sum(),
-        to_rolling,
-        df_r[df_r['Признак годности'] == 'потери при прокатке']['Масса, тн'].sum(),
-        df_r[df_r['Признак годности'] == 'некондиция']['Масса, тн'].sum(),
-        df_r[df_r['Порезка'] == 'Склад']['Масса, тн'].sum(),
-        to_cutting,
-        df_c[df_c['Признак годности'] == 'потери при резке']['Масса, тн'].sum(),
-        df_sh[df_sh['Получатель'] == 'Склад']['Масса, тн'].sum(),
-        shipped
-    ]
-)
+def get_mece_matrix(ds, dr, dc, dsh):
+    # Собираем все уникальные даты из всех этапов
+    combined_dates = pd.concat([ds['Дата'], dr['Дата'], dc['Дата'], dsh['Дата']])
+    all_dates = sorted(pd.to_datetime(combined_dates).unique())
+    date_cols = [d.strftime('%d.%m.%Y') for d in all_dates]
+    
+    rows = ["Выплавлено", "Переходные и обрезь", "Годных слябов", "В рулонах", "В листах", "Н/С продукция", "Отгружено"]
+    matrix = pd.DataFrame(index=rows, columns=date_cols).fillna("")
 
-fig = go.Figure(data=[go.Sankey(
-    node = dict(pad=15, thickness=20, label=nodes, color="royalblue"),
-    link = links
-)])
-st.plotly_chart(fig, use_container_width=True)
+    for d in all_dates:
+        d_str = d.strftime('%d.%m.%Y')
+        d_iso = d.strftime('%Y-%m-%d')
+        
+        # Выплавка
+        s_day = ds[pd.to_datetime(ds['Дата']) == d]
+        if not s_day.empty:
+            matrix.at["Выплавлено", d_str] = s_day['Масса, тн'].sum()
+            matrix.at["Переходные и обрезь", d_str] = s_day[s_day['Признак годности'] == 'Переходные и обрезь']['Масса, тн'].sum()
+            matrix.at["Годных слябов", d_str] = s_day[s_day['Признак годности'] == 'Годные']['Масса, тн'].sum()
+            
+        # Прокатка
+        r_day = dr[pd.to_datetime(dr['Дата']) == d]
+        if not r_day.empty:
+            matrix.at["В рулонах", d_str] = r_day[r_day['Признак годности'] == 'годные']['Масса, тн'].sum()
+            matrix.at["Н/С продукция", d_str] = r_day[r_day['Признак годности'] == 'некондиция']['Масса, тн'].sum()
+            
+        # Порезка
+        c_day = dc[pd.to_datetime(dc['Дата']) == d]
+        if not c_day.empty:
+            matrix.at["В листах", d_str] = c_day[c_day['Признак годности'] == 'годные']['Масса, тн'].sum()
+            
+        # Отгрузка
+        sh_day = dsh[pd.to_datetime(dsh['Дата']) == d]
+        if not sh_day.empty:
+            matrix.at["Отгружено", d_str] = sh_day['Масса, тн'].sum()
+            
+    return matrix
 
-st.markdown("---")
-# Таблицы данных
-with st.expander("📥 Посмотреть сырые данные (Excel)"):
+st.table(get_mece_matrix(df_s_f, df_r_f, df_c_f, df_sh_f))
+
+# --- 2. СОРТАМЕНТНЫЕ ТАБЛИЦЫ ---
+st.divider()
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("🚜 Результаты прокатки")
+    st.write("Сортаменты рулонов, полученные из слябов:")
+    r_sort = df_r_f.groupby(['ID Плавки', 'Parent_Slab_ID', 'Coil_ID', 'Толщина, мм', 'Ширина, мм'])['Масса, тн'].sum().reset_index()
+    st.dataframe(r_sort, hide_index=True, use_container_width=True)
+
+with col2:
+    st.subheader("✂️ Результаты порезки")
+    st.write("Сортаменты листов (ТхШхД):")
+    c_sort = df_c_f.groupby(['ID Плавки', 'Parent_Coil_ID', 'Толщина, мм', 'Ширина, мм', 'Длина, мм'])['Масса, тн'].sum().reset_index()
+    st.dataframe(c_sort, hide_index=True, use_container_width=True)
+
+# --- 3. ДЕТАЛЬНЫЕ БАЗЫ ---
+with st.expander("📂 Посмотреть исходные данные (все транзакции)"):
     t1, t2, t3, t4 = st.tabs(["Выплавка", "Прокатка", "Порезка", "Отгрузка"])
-    t1.dataframe(df_s)
-    t2.dataframe(df_r)
-    t3.dataframe(df_c)
-    t4.dataframe(df_sh)
+    t1.write(df_s_f)
+    t2.write(df_r_f)
+    t3.write(df_c_f)
+    t4.write(df_sh_f)
